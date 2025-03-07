@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import open3d as o3d
 import pyrealsense2 as rs
@@ -36,26 +37,34 @@ class TravSegmenter:
             self.pipeline_started = True
 
     def capture_image(self):
+        t0 = time.perf_counter_ns()
         frames = self.pipeline.wait_for_frames()
+        t1 = time.perf_counter_ns()
         aligned_frames = self.align.process(frames)
 
         self.depth_frame = aligned_frames.get_depth_frame()
         self.color_frame = aligned_frames.get_color_frame()
+        t2 = time.perf_counter_ns()
 
-        self.pc.map_to(self.color_frame)  # Map to color for RGB information
+        # self.pc.map_to(self.color_frame)  # Map to color for RGB information
         points = self.pc.calculate(self.depth_frame)
+        t3 = time.perf_counter_ns()
 
         # Convert to numpy array
         v = np.asanyarray(points.get_vertices())  # xyz points
         xyz = np.array([(p[0], p[1], p[2]) for p in v])  # Convert to structured np.array
         self.pcd.points = o3d.utility.Vector3dVector(xyz)
+        t4 = time.perf_counter_ns()
+        print(f"Timing Image Cap: {(t4 - t0) / 1e6}ms\n\tWait Frames: {(t1 - t0) / 1e6}\n\tExtr Frames: {(t2 - t1) / 1e6}\n\tComp Points {(t3 - t2) / 1e6}\n\tTrans Points: {(t4 - t3) / 1e6}")
 
     def fit_ground_plane(self): 
         if self.depth_frame is None:
             raise RuntimeError("No images have been captured. Cannot identify ground plane.")
+        t0 = time.perf_counter_ns()
         self.plane_model, self.inliers = self.pcd.segment_plane(distance_threshold=self.rnsc_dist_thresh,
                                                       ransac_n=self.rnsc_n0,
                                                       num_iterations=self.rnsc_iters)
+        print(f"Timing RANSAC Fit: {(time.perf_counter_ns() - t0) / 1e6}ms")
         
     def o3d_vis_ground_plane(self):
         # Step 4: Extract inliers (ground) and outliers (obstacles)
