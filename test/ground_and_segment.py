@@ -10,15 +10,23 @@ from src.trav_segmenter import TravSegmenter
 input_file = "output/d435_03-13_11-03.bag"
 trav_seg = TravSegmenter(from_file=True, input_file=input_file, o3d_vis=True, print_timing=True)
 
+trav_seg.capture_frame()
+trav_seg.add_point_prompt()
 try:
     while True:
+        # First, capture the frame
         trav_seg.capture_frame()
 
+        # Run RANSAC
         trav_seg.fit_ground_plane()
 
+        # Run Segmenting
+        trav_seg.segment_frame()
+
+        # Update Vis
         trav_seg.update_pc_vis()
-        trav_seg.vis.poll_events()
-        trav_seg.vis.update_renderer()
+        trav_seg.update_seg_vis()
+
 except KeyboardInterrupt:
     print("\nRecording stopped.")
 

@@ -1,8 +1,10 @@
 import cv2
 import time
+import torch
 import numpy as np
 import open3d as o3d
 import pyrealsense2 as rs
+from efficient_track_anything.build_efficienttam import build_efficienttam_camera_predictor
 
 
 class TravSegmenter:
@@ -12,7 +14,9 @@ class TravSegmenter:
             rnsc_dist_thres=0.05, rnsc_n0=3, rnsc_iters=1000,
             record=False, record_fn='output.bag', print_timing=False,
             from_file=False, input_file=None, loop_playback=False,
-            o3d_vis=False):
+            o3d_vis=False,
+            checkpoint="/home/noelcs/repos/my_tam/checkpoints/efficienttam_ti_512x512.pt",
+            model_cfg="configs/efficienttam/efficienttam_ti_512x512.yaml"):
         # Set up the pipeline
         self.pipeline = rs.pipeline()
         self.config = rs.config()
@@ -45,12 +49,26 @@ class TravSegmenter:
         # Align color and depth images
         self.align = rs.align(rs.stream.color)
 
+        # O3D Visualization
         if o3d_vis:
             self.ground_cloud = o3d.geometry.PointCloud()
             self.obstacle_cloud = o3d.geometry.PointCloud()
             self.vis = o3d.visualization.Visualizer()
             self.vis.create_window()
             self.added_geoms = False
+        
+        # TAM 
+        self.predictor = build_efficienttam_camera_predictor(
+            model_cfg, 
+            checkpoint, 
+            device=torch.device("cuda"),
+            vos_optimized=True,
+            hydra_overrides_extra=["++model.compile_image_encoder=False"], 
+            apply_postprocessing=False,
+        )
+        self.out_obj_ids, self.out_mask_logits, self.seg_frame = None, None, None
+        self.selected_point = None
+
     
     def start_pipeline(self):
         if not self.pipeline_started:
@@ -131,9 +149,56 @@ class TravSegmenter:
 
         self.vis.update_geometry(self.ground_cloud)
         self.vis.update_geometry(self.obstacle_cloud)
+
+        self.vis.poll_events()
+        self.vis.update_renderer()
+
         if self.print_timing:
             print(f"Timing Update Vis: {(time.perf_counter_ns() - t0) / 1e6}ms")
+
+    def select_pixel_(self, event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:  # Left mouse button click
+            self.selected_point = np.array([[x,y]], np.int)
+            print(f"Selected point: ({x}, {y})")
+
+    def add_point_prompt(self):
+        color_image = np.asanyarray(self.color_frame.get_data())
+        self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+        self.predictor.load_first_frame(self.seg_frame)
+
+        ann_frame_idx = 0
+        ann_obj_id = 1
+        labels = np.array([1],dtype=np.float32)
+
+        while self.selected_point is None:
+            cv2.imshow('frame', self.seg_frame)
+            cv2.setMouseCallback('frame', self.select_pixel_)
+            cv2.waitKey(1)
+
+        labels = np.array([1], dtype=np.int32)
+
+        _, self.out_obj_ids, self.out_mask_logits = self.predictor.add_new_prompt(frame_idx=ann_frame_idx, obj_id=ann_obj_id, points=self.selected_point, labels=labels)
+        self.selected_point = None
         
+    def segment_frame(self):
+        color_image = np.asanyarray(self.color_frame.get_data())
+        self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+        self.out_obj_ids, self.out_mask_logits = self.predictor.track(self.seg_frame)
+
+    def update_seg_vis(self):
+        width, height = self.seg_frame.shape[:2][::-1]
+        all_mask = np.zeros((height, width, 1), dtype=np.uint8)
+        for i in range(0, len(self.out_obj_ids)):
+            out_mask = (self.out_mask_logits[i]>0.0).permute(1,2,0).cpu().numpy().astype(np.uint8)*255
+            all_mask = cv2.bitwise_or(all_mask, out_mask)
+
+        all_mask = cv2.cvtColor(all_mask, cv2.COLOR_GRAY2RGB)
+        frame = cv2.addWeighted(self.seg_frame, 1, all_mask, 0.5, 0)
+
+        frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+        cv2.imshow("frame", frame)
+
+
     def shutdown(self):
         if self.pipeline_started:
             self.pipeline.stop()
