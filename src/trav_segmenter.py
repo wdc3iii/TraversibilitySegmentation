@@ -68,7 +68,14 @@ class TravSegmenter:
         )
         self.out_obj_ids, self.out_mask_logits, self.seg_frame = None, None, None
         self.selected_point = None
+        self.click_points, self.click_labels = {}, {}
 
+        # CV2 window for camera control
+        self.curr_group = 0
+        
+        self.seg_vis_win_name = "Camera Control"
+        cv2.namedWindow(self.seg_vis_win_name, cv2.WINDOW_GUI_NORMAL)
+        cv2.setMouseCallback(self.seg_vis_win_name, self.on_mouse_)
     
     def start_pipeline(self):
         if not self.pipeline_started:
@@ -161,25 +168,12 @@ class TravSegmenter:
             self.selected_point = np.array([[x,y]], np.int)
             print(f"Selected point: ({x}, {y})")
 
-    def add_point_prompt(self):
+    def prompt_seg(self):
         color_image = np.asanyarray(self.color_frame.get_data())
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
         self.predictor.load_first_frame(self.seg_frame)
-
-        ann_frame_idx = 0
-        ann_obj_id = 1
-        labels = np.array([1],dtype=np.float32)
-
-        print("Select point to prompt segmenter.")
-        while self.selected_point is None:
-            cv2.imshow('frame', self.seg_frame)
-            cv2.setMouseCallback('frame', self.select_pixel_)
-            cv2.waitKey(1)
-
-        labels = np.array([1], dtype=np.int32)
-
-        _, self.out_obj_ids, self.out_mask_logits = self.predictor.add_new_prompt(frame_idx=ann_frame_idx, obj_id=ann_obj_id, points=self.selected_point, labels=labels)
-        self.selected_point = None
+        while self.curr_group != 13:  # for 'enter' key
+            self.update_seg_vis()
 
     def segment_frame(self):
         t0 = time.perf_counter_ns()
@@ -191,21 +185,38 @@ class TravSegmenter:
 
     def update_seg_vis(self):
         t0 = time.perf_counter_ns()
-        width, height = self.seg_frame.shape[:2][::-1]
-        all_mask = np.zeros((height, width, 1), dtype=np.uint8)
-        for i in range(0, len(self.out_obj_ids)):
-            out_mask = (self.out_mask_logits[i]>0.0).permute(1,2,0).cpu().numpy().astype(np.uint8)*255
-            all_mask = cv2.bitwise_or(all_mask, out_mask)
+        if self.out_obj_ids is None:
+            frame = self.seg_frame
+        else:
+            width, height = self.seg_frame.shape[:2][::-1]
+            all_mask = np.zeros((height, width, 1), dtype=np.uint8)
+            for i in range(0, len(self.out_obj_ids)):
+                out_mask = (self.out_mask_logits[i]>0.0).permute(1,2,0).cpu().numpy().astype(np.uint8)*255
+                all_mask = cv2.bitwise_or(all_mask, out_mask)
 
-        all_mask = cv2.cvtColor(all_mask, cv2.COLOR_GRAY2RGB)
-        frame = cv2.addWeighted(self.seg_frame, 1, all_mask, 0.5, 0)
+            all_mask = cv2.cvtColor(all_mask, cv2.COLOR_GRAY2RGB)
+            frame = cv2.addWeighted(self.seg_frame, 1, all_mask, 0.5, 0)
 
         frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
-        cv2.imshow("frame", frame)
-        cv2.waitKey(1)
+        cv2.imshow(self.seg_vis_win_name, frame)
+        self.curr_group = cv2.waitKey(1)
         if self.print_timing:
             print(f"Updating Seg Vis: {(time.perf_counter_ns() - t0) / 1e6}ms")
 
+    def on_mouse_(self, event, x, y, flags, param):
+        if event != cv2.EVENT_LBUTTONDOWN and event != cv2.EVENT_RBUTTONDOWN:
+            return
+        label = 1 if event == cv2.EVENT_LBUTTONDOWN else 0
+        
+        new_point = np.array([[x, y]], dtype=np.int32)
+        new_label = np.array([label], dtype=np.int32) 
+        if self.curr_group not in self.click_points.keys():
+            self.click_points[self.curr_group] = np.empty((0, 2), dtype=np.int32)
+            self.click_labels[self.curr_group] = np.empty(0, dtype=np.int32)
+        self.click_points[self.curr_group] = np.append(self.click_points[self.curr_group], new_point, axis=0)
+        self.click_labels[self.curr_group] = np.append(self.click_labels[self.curr_group], new_label)
+        _, self.out_obj_ids, self.out_mask_logits = self.predictor.add_new_prompt(frame_idx=0, obj_id=self.curr_group, points=new_point,labels=new_label)
+        print('here')
 
     def shutdown(self):
         if self.pipeline_started:

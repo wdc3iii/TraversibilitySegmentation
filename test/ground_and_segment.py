@@ -14,7 +14,7 @@ trav_seg = TravSegmenter(record=record, record_fn="output/d435_" + timestamp + "
 # trav_seg = TravSegmenter(from_file=True, input_file=input_file, o3d_vis=od3_vis, print_timing=print_timing)
 
 trav_seg.capture_frame()
-trav_seg.add_point_prompt()
+trav_seg.prompt_seg()
 try:
     while True:
         # First, capture the frame
