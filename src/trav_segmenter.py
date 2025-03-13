@@ -170,6 +170,7 @@ class TravSegmenter:
         ann_obj_id = 1
         labels = np.array([1],dtype=np.float32)
 
+        print("Select point to prompt segmenter.")
         while self.selected_point is None:
             cv2.imshow('frame', self.seg_frame)
             cv2.setMouseCallback('frame', self.select_pixel_)
@@ -179,13 +180,17 @@ class TravSegmenter:
 
         _, self.out_obj_ids, self.out_mask_logits = self.predictor.add_new_prompt(frame_idx=ann_frame_idx, obj_id=ann_obj_id, points=self.selected_point, labels=labels)
         self.selected_point = None
-        
+
     def segment_frame(self):
+        t0 = time.perf_counter_ns()
         color_image = np.asanyarray(self.color_frame.get_data())
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
         self.out_obj_ids, self.out_mask_logits = self.predictor.track(self.seg_frame)
+        if self.print_timing:
+            print(f"Segmenting: {(time.perf_counter_ns() - t0) / 1e6}ms")
 
     def update_seg_vis(self):
+        t0 = time.perf_counter_ns()
         width, height = self.seg_frame.shape[:2][::-1]
         all_mask = np.zeros((height, width, 1), dtype=np.uint8)
         for i in range(0, len(self.out_obj_ids)):
@@ -197,12 +202,17 @@ class TravSegmenter:
 
         frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
         cv2.imshow("frame", frame)
+        cv2.waitKey(1)
+        if self.print_timing:
+            print(f"Updating Seg Vis: {(time.perf_counter_ns() - t0) / 1e6}ms")
 
 
     def shutdown(self):
         if self.pipeline_started:
             self.pipeline.stop()
             self.pipeline_started = False
+        cv2.destroyAllWindows()
+        self.vis.destroy_window()
         
     def __del__(self):
         self.shutdown()
