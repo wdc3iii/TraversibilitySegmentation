@@ -17,6 +17,25 @@ class TravSegmenter:
             o3d_vis=False,
             checkpoint="/home/noelcs/repos/my_tam/checkpoints/efficienttam_ti_512x512.pt",
             model_cfg="configs/efficienttam/efficienttam_ti_512x512.yaml"):
+        """Instantiates an object to segment traversible regions from the environment
+
+        Args:
+            width (int, optional): _description_. Defaults to 640.
+            height (int, optional): _description_. Defaults to 480.
+            frame_rate (int, optional): _description_. Defaults to 30.
+            rnsc_dist_thres (float, optional): _description_. Defaults to 0.05.
+            rnsc_n0 (int, optional): _description_. Defaults to 3.
+            rnsc_iters (int, optional): _description_. Defaults to 1000.
+            record (bool, optional): _description_. Defaults to False.
+            record_fn (str, optional): _description_. Defaults to 'output.bag'.
+            print_timing (bool, optional): _description_. Defaults to False.
+            from_file (bool, optional): _description_. Defaults to False.
+            input_file (_type_, optional): _description_. Defaults to None.
+            loop_playback (bool, optional): _description_. Defaults to False.
+            o3d_vis (bool, optional): _description_. Defaults to False.
+            checkpoint (str, optional): _description_. Defaults to "/home/noelcs/repos/my_tam/checkpoints/efficienttam_ti_512x512.pt".
+            model_cfg (str, optional): _description_. Defaults to "configs/efficienttam/efficienttam_ti_512x512.yaml".
+        """
         # Set up the pipeline
         self.pipeline = rs.pipeline()
         self.config = rs.config()
@@ -37,9 +56,11 @@ class TravSegmenter:
         self.color_frame = None
         self.pc = rs.pointcloud()
         self.pcd = o3d.geometry.PointCloud()
+        self.xyz = None
         self.plane_model = None
         self.inliers = None
         self.print_timing = print_timing
+        self.save_flag = False
 
         # RANSAC parameters
         self.rnsc_dist_thresh = rnsc_dist_thres
@@ -72,9 +93,11 @@ class TravSegmenter:
 
         # CV2 window for camera control
         self.curr_group = 0
+        self.reprompt_segment = False
         
         self.seg_vis_win_name = "Camera Control"
         cv2.namedWindow(self.seg_vis_win_name, cv2.WINDOW_GUI_NORMAL)
+        cv2.resizeWindow(self.seg_vis_win_name, (960, 540))
         cv2.setMouseCallback(self.seg_vis_win_name, self.on_mouse_)
     
     def start_pipeline(self):
@@ -89,6 +112,17 @@ class TravSegmenter:
 
         self.depth_frame = aligned_frames.get_depth_frame()
         self.color_frame = aligned_frames.get_color_frame()
+        
+        points = self.pc.calculate(self.depth_frame)
+
+        # Convert to numpy array
+        v = np.asanyarray(points.get_vertices())  # xyz points
+        self.xyz = np.column_stack((v['f0'], v['f1'], v['f2'])).astype(np.float64, copy=False)  # Ensure correct dtype without unnecessary copy, critical for timing
+        self.pcd.points = o3d.utility.Vector3dVector(self.xyz)
+
+        if self.reprompt_segment:
+            self.prompt_seg()
+            self.reprompt_segment = False
 
         if self.print_timing:
             print(f"Timing Image Cap: {(time.perf_counter_ns() - t0) / 1e6}ms")
@@ -98,13 +132,7 @@ class TravSegmenter:
             raise RuntimeError("No images have been captured. Cannot identify ground plane.")
         t0 = time.perf_counter_ns()
         # self.pc.map_to(self.color_frame)  # Map to color for RGB information
-        points = self.pc.calculate(self.depth_frame)
-
-        # Convert to numpy array
-        v = np.asanyarray(points.get_vertices())  # xyz points
-        xyz = np.column_stack((v['f0'], v['f1'], v['f2']))
-        xyz = xyz.astype(np.float64, copy=False)  # Ensure correct dtype without unnecessary copy, critical for timing
-        self.pcd.points = o3d.utility.Vector3dVector(xyz)
+        
         self.plane_model, self.inliers = self.pcd.segment_plane(distance_threshold=self.rnsc_dist_thresh,
                                                       ransac_n=self.rnsc_n0,
                                                       num_iterations=self.rnsc_iters)
@@ -180,6 +208,9 @@ class TravSegmenter:
         color_image = np.asanyarray(self.color_frame.get_data())
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
         self.out_obj_ids, self.out_mask_logits = self.predictor.track(self.seg_frame)
+
+        # self.save_flag = True
+
         if self.print_timing:
             print(f"Segmenting: {(time.perf_counter_ns() - t0) / 1e6}ms")
 
@@ -197,13 +228,25 @@ class TravSegmenter:
             all_mask = cv2.cvtColor(all_mask, cv2.COLOR_GRAY2RGB)
             frame = cv2.addWeighted(self.seg_frame, 1, all_mask, 0.5, 0)
 
+            if self.save_flag:
+                import sys
+                import scipy.io
+                np.set_printoptions(threshold=sys.maxsize)
+                scipy.io.savemat("output/depth_data.mat", {"xyz": self.xyz, "mask": all_mask})
+                print("mat file saved -> exiting")
+                exit(1)
+
         frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
         cv2.imshow(self.seg_vis_win_name, frame)
         self.curr_group = cv2.waitKey(1)
+
         if self.print_timing:
             print(f"Updating Seg Vis: {(time.perf_counter_ns() - t0) / 1e6}ms")
 
     def on_mouse_(self, event, x, y, flags, param):
+        if event == cv2.EVENT_MBUTTONDOWN:
+            self.reprompt_segment = True
+            return
         if event != cv2.EVENT_LBUTTONDOWN and event != cv2.EVENT_RBUTTONDOWN:
             return
         label = 1 if event == cv2.EVENT_LBUTTONDOWN else 0
