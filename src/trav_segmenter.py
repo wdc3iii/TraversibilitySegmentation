@@ -1,6 +1,7 @@
 import cv2
 import time
 import torch
+import scipy.io
 import numpy as np
 import open3d as o3d
 import pyrealsense2 as rs
@@ -201,6 +202,7 @@ class TravSegmenter:
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
         self.predictor.load_first_frame(self.seg_frame)
         while self.curr_group != 13:  # for 'enter' key
+            self.generate_segment_mask_()
             self.update_seg_vis()
 
     def segment_frame(self):
@@ -208,33 +210,28 @@ class TravSegmenter:
         color_image = np.asanyarray(self.color_frame.get_data())
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
         self.out_obj_ids, self.out_mask_logits = self.predictor.track(self.seg_frame)
-
-        # self.save_flag = True
+        self.generate_segment_mask_()
 
         if self.print_timing:
             print(f"Segmenting: {(time.perf_counter_ns() - t0) / 1e6}ms")
+
+    def generate_segment_mask_(self):
+        if self.out_obj_ids is None:
+            return
+        self.all_mask = np.any((self.out_mask_logits.permute(0, 2, 3, 1) > 0.0).cpu().numpy(), axis=0).astype(bool)
 
     def update_seg_vis(self):
         t0 = time.perf_counter_ns()
         if self.out_obj_ids is None:
             frame = self.seg_frame
         else:
-            width, height = self.seg_frame.shape[:2][::-1]
-            all_mask = np.zeros((height, width, 1), dtype=np.uint8)
-            for i in range(0, len(self.out_obj_ids)):
-                out_mask = (self.out_mask_logits[i]>0.0).permute(1,2,0).cpu().numpy().astype(np.uint8)*255
-                all_mask = cv2.bitwise_or(all_mask, out_mask)
-
-            all_mask = cv2.cvtColor(all_mask, cv2.COLOR_GRAY2RGB)
-            frame = cv2.addWeighted(self.seg_frame, 1, all_mask, 0.5, 0)
-
-            if self.save_flag:
-                import sys
-                import scipy.io
-                np.set_printoptions(threshold=sys.maxsize)
-                scipy.io.savemat("output/depth_data.mat", {"xyz": self.xyz, "mask": all_mask})
-                print("mat file saved -> exiting")
-                exit(1)
+            frame = cv2.addWeighted(
+                self.seg_frame,
+                1,
+                cv2.cvtColor(self.all_mask.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB),
+                0.5,
+                0
+            )
 
         frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
         cv2.imshow(self.seg_vis_win_name, frame)
@@ -243,6 +240,9 @@ class TravSegmenter:
         if self.print_timing:
             print(f"Updating Seg Vis: {(time.perf_counter_ns() - t0) / 1e6}ms")
 
+    def save_frame(self, save_path):
+        scipy.io.savemat(save_path, {"xyz": self.xyz, "mask": self.all_mask})
+        
     def on_mouse_(self, event, x, y, flags, param):
         if event == cv2.EVENT_MBUTTONDOWN:
             self.reprompt_segment = True
