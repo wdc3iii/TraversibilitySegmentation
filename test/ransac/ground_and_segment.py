@@ -1,5 +1,5 @@
 from datetime import datetime
-from src.trav_segmenter import TravSegmenter
+from trav_seg.trav_segmenter import TravSegmenter
 
 od3_vis = True
 print_timing = True

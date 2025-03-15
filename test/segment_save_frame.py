@@ -1,5 +1,5 @@
 from datetime import datetime
-from src.trav_segmenter import TravSegmenter
+from trav_seg.trav_segmenter import TravSegmenter
 
 
 timestamp = datetime.now().strftime("%m-%d_%H-%M")

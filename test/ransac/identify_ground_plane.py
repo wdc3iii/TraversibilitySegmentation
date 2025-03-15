@@ -1,5 +1,5 @@
 import time
-from src.trav_segmenter import TravSegmenter
+from trav_seg.trav_segmenter import TravSegmenter
 
 
 N = 10

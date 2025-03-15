@@ -1,4 +1,4 @@
-from src.trav_segmenter import TravSegmenter
+from trav_seg.trav_segmenter import TravSegmenter
 
 input_file = "output/d435_03-13_10-28.bag"
 trav_seg = TravSegmenter(from_file=True, input_file=input_file)
