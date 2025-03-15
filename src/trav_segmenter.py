@@ -89,7 +89,6 @@ class TravSegmenter:
             apply_postprocessing=False,
         )
         self.out_obj_ids, self.out_mask_logits, self.seg_frame = None, None, None
-        self.selected_point = None
         self.click_points, self.click_labels = {}, {}
 
         # CV2 window for camera control
@@ -102,11 +101,15 @@ class TravSegmenter:
         cv2.setMouseCallback(self.seg_vis_win_name, self.on_mouse_)
     
     def start_pipeline(self):
+        """Starts the camera pipeline (if not already started)
+        """
         if not self.pipeline_started:
             self.pipeline.start(self.config)
             self.pipeline_started = True
 
     def capture_frame(self):
+        """Captures the most recent frame from the camera pipeline, and extracts point cloud information
+        """
         t0 = time.perf_counter_ns()
         frames = self.pipeline.wait_for_frames()
         aligned_frames = self.align.process(frames)
@@ -119,7 +122,6 @@ class TravSegmenter:
         # Convert to numpy array
         v = np.asanyarray(points.get_vertices())  # xyz points
         self.xyz = np.column_stack((v['f0'], v['f1'], v['f2'])).astype(np.float64, copy=False)  # Ensure correct dtype without unnecessary copy, critical for timing
-        self.pcd.points = o3d.utility.Vector3dVector(self.xyz)
 
         if self.reprompt_segment:
             self.prompt_seg()
@@ -128,28 +130,106 @@ class TravSegmenter:
         if self.print_timing:
             print(f"Timing Image Cap: {(time.perf_counter_ns() - t0) / 1e6}ms")
 
-    def fit_ground_plane(self): 
-        if self.depth_frame is None:
-            raise RuntimeError("No images have been captured. Cannot identify ground plane.")
-        t0 = time.perf_counter_ns()
-        # self.pc.map_to(self.color_frame)  # Map to color for RGB information
-        
-        self.plane_model, self.inliers = self.pcd.segment_plane(distance_threshold=self.rnsc_dist_thresh,
-                                                      ransac_n=self.rnsc_n0,
-                                                      num_iterations=self.rnsc_iters)
-        if self.print_timing:
-            print(f"Timing RANSAC Fit: {(time.perf_counter_ns() - t0) / 1e6}ms")
-        
-    def o3d_vis_ground_plane(self):
-        # Step 4: Extract inliers (ground) and outliers (obstacles)
-        ground_cloud = self.pcd.select_by_index(self.inliers)
-        obstacle_cloud = self.pcd.select_by_index(self.inliers, invert=True)
+    def prompt_seg(self):
+        """Allows the user to select a set of points with which to prompt the segmenter.
+        """
+        if self.color_frame is None:
+            self.capture_frame()
+        color_image = np.asanyarray(self.color_frame.get_data())
+        self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+        self.predictor.load_first_frame(self.seg_frame)
+        while self.curr_group != 13:  # for 'enter' key
+            self.generate_segment_mask_()
+            self.update_seg_vis()
 
-        # Step 5: Visualize
-        o3d.visualization.draw_geometries([ground_cloud.paint_uniform_color([0,1,0]), 
-                                        obstacle_cloud.paint_uniform_color([1,0,0])])
+    def segment_frame(self):
+        """Segments the current frame
+        """
+        t0 = time.perf_counter_ns()
+        color_image = np.asanyarray(self.color_frame.get_data())
+        self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+        self.out_obj_ids, self.out_mask_logits = self.predictor.track(self.seg_frame)
+        self.generate_segment_mask_()
+
+        if self.print_timing:
+            print(f"Segmenting: {(time.perf_counter_ns() - t0) / 1e6}ms")
+
+    def save_frame(self, save_path):
+        """Saves the current frame (color, point cloud, mask)"""
+        scipy.io.savemat(save_path, {"rgb": self.color_frame, "pc": self.xyz, "mask": self.all_mask})
         
+    def generate_segment_mask_(self):
+        """Generates the segmentation mask from the output of the segmenter.
+        """
+        if self.out_obj_ids is None:
+            return
+        self.all_mask = np.any((self.out_mask_logits.permute(0, 2, 3, 1) > 0.0).cpu().numpy(), axis=0).astype(bool)
+    
+    def on_mouse_(self, event, x, y, flags, param):
+        """Mouse callback
+
+        Args:
+            event (_type_): mouse event
+            x (_type_): x location associated with event
+            y (_type_): y location associated with event
+            flags (_type_): flag associated with event
+            param (_type_): parameters associated with the event
+        """
+        if event == cv2.EVENT_MBUTTONDOWN:
+            self.reprompt_segment = True
+            return
+        if event != cv2.EVENT_LBUTTONDOWN and event != cv2.EVENT_RBUTTONDOWN:
+            return
+        label = 1 if event == cv2.EVENT_LBUTTONDOWN else 0
+        
+        new_point = np.array([[x, y]], dtype=np.int32)
+        new_label = np.array([label], dtype=np.int32) 
+        if self.curr_group not in self.click_points.keys():
+            self.click_points[self.curr_group] = np.empty((0, 2), dtype=np.int32)
+            self.click_labels[self.curr_group] = np.empty(0, dtype=np.int32)
+        self.click_points[self.curr_group] = np.append(self.click_points[self.curr_group], new_point, axis=0)
+        self.click_labels[self.curr_group] = np.append(self.click_labels[self.curr_group], new_label)
+        _, self.out_obj_ids, self.out_mask_logits = self.predictor.add_new_prompt(frame_idx=0, obj_id=self.curr_group, points=new_point,labels=new_label)
+
+    def shutdown(self):
+        """Shuts down the camera pipeline
+        """
+        if self.pipeline_started:
+            self.pipeline.stop()
+            self.pipeline_started = False
+        cv2.destroyAllWindows()
+        self.vis.destroy_window()
+        
+    def __del__(self):
+        """Deletes this object
+        """
+        self.shutdown()
+
+    def update_seg_vis(self):
+        """Updates the segmentation visualizer.
+        """
+        t0 = time.perf_counter_ns()
+        if self.out_obj_ids is None:
+            frame = self.seg_frame
+        else:
+            frame = cv2.addWeighted(
+                self.seg_frame,
+                1,
+                cv2.cvtColor(self.all_mask.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB),
+                0.5,
+                0
+            )
+
+        frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+        cv2.imshow(self.seg_vis_win_name, frame)
+        self.curr_group = cv2.waitKey(1)
+
+        if self.print_timing:
+            print(f"Updating Seg Vis: {(time.perf_counter_ns() - t0) / 1e6}ms")
+
     def vis_frame(self):
+        """Visualize the current frame
+        """
         depth_image = np.asanyarray(self.depth_frame.get_data())
         color_image = np.asanyarray(self.color_frame.get_data())
         depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
@@ -168,8 +248,10 @@ class TravSegmenter:
         cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
         cv2.imshow('RealSense', images)
         cv2.waitKey(1)
-
+    
     def update_pc_vis(self):
+        """Visualize the current pointcloud
+        """
         t0 = time.perf_counter_ns()
         
         self.ground_cloud.points = self.pcd.select_by_index(self.inliers).points
@@ -192,81 +274,30 @@ class TravSegmenter:
         if self.print_timing:
             print(f"Timing Update Vis: {(time.perf_counter_ns() - t0) / 1e6}ms")
 
-    def select_pixel_(self, event, x, y, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN:  # Left mouse button click
-            self.selected_point = np.array([[x,y]], np.int)
-            print(f"Selected point: ({x}, {y})")
+    def fit_ground_plane(self): 
+        """Fit a ground plane to the point cloud
 
-    def prompt_seg(self):
-        color_image = np.asanyarray(self.color_frame.get_data())
-        self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
-        self.predictor.load_first_frame(self.seg_frame)
-        while self.curr_group != 13:  # for 'enter' key
-            self.generate_segment_mask_()
-            self.update_seg_vis()
-
-    def segment_frame(self):
+        Raises:
+            RuntimeError: Trying to fit a groud plane before an image has been captured.
+        """
+        if self.depth_frame is None:
+            self.capture_frame()
         t0 = time.perf_counter_ns()
-        color_image = np.asanyarray(self.color_frame.get_data())
-        self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
-        self.out_obj_ids, self.out_mask_logits = self.predictor.track(self.seg_frame)
-        self.generate_segment_mask_()
-
+        # self.pc.map_to(self.color_frame)  # Map to color for RGB information
+        self.pcd.points = o3d.utility.Vector3dVector(self.xyz)
+        self.plane_model, self.inliers = self.pcd.segment_plane(distance_threshold=self.rnsc_dist_thresh,
+                                                      ransac_n=self.rnsc_n0,
+                                                      num_iterations=self.rnsc_iters)
         if self.print_timing:
-            print(f"Segmenting: {(time.perf_counter_ns() - t0) / 1e6}ms")
-
-    def generate_segment_mask_(self):
-        if self.out_obj_ids is None:
-            return
-        self.all_mask = np.any((self.out_mask_logits.permute(0, 2, 3, 1) > 0.0).cpu().numpy(), axis=0).astype(bool)
-
-    def update_seg_vis(self):
-        t0 = time.perf_counter_ns()
-        if self.out_obj_ids is None:
-            frame = self.seg_frame
-        else:
-            frame = cv2.addWeighted(
-                self.seg_frame,
-                1,
-                cv2.cvtColor(self.all_mask.astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB),
-                0.5,
-                0
-            )
-
-        frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
-        cv2.imshow(self.seg_vis_win_name, frame)
-        self.curr_group = cv2.waitKey(1)
-
-        if self.print_timing:
-            print(f"Updating Seg Vis: {(time.perf_counter_ns() - t0) / 1e6}ms")
-
-    def save_frame(self, save_path):
-        scipy.io.savemat(save_path, {"xyz": self.xyz, "mask": self.all_mask})
+            print(f"Timing RANSAC Fit: {(time.perf_counter_ns() - t0) / 1e6}ms")
         
-    def on_mouse_(self, event, x, y, flags, param):
-        if event == cv2.EVENT_MBUTTONDOWN:
-            self.reprompt_segment = True
-            return
-        if event != cv2.EVENT_LBUTTONDOWN and event != cv2.EVENT_RBUTTONDOWN:
-            return
-        label = 1 if event == cv2.EVENT_LBUTTONDOWN else 0
-        
-        new_point = np.array([[x, y]], dtype=np.int32)
-        new_label = np.array([label], dtype=np.int32) 
-        if self.curr_group not in self.click_points.keys():
-            self.click_points[self.curr_group] = np.empty((0, 2), dtype=np.int32)
-            self.click_labels[self.curr_group] = np.empty(0, dtype=np.int32)
-        self.click_points[self.curr_group] = np.append(self.click_points[self.curr_group], new_point, axis=0)
-        self.click_labels[self.curr_group] = np.append(self.click_labels[self.curr_group], new_label)
-        _, self.out_obj_ids, self.out_mask_logits = self.predictor.add_new_prompt(frame_idx=0, obj_id=self.curr_group, points=new_point,labels=new_label)
-        print('here')
+    def o3d_vis_ground_plane(self):
+        """Visualize the current ground plane estimate.
+        """
+        # Step 4: Extract inliers (ground) and outliers (obstacles)
+        ground_cloud = self.pcd.select_by_index(self.inliers)
+        obstacle_cloud = self.pcd.select_by_index(self.inliers, invert=True)
 
-    def shutdown(self):
-        if self.pipeline_started:
-            self.pipeline.stop()
-            self.pipeline_started = False
-        cv2.destroyAllWindows()
-        self.vis.destroy_window()
-        
-    def __del__(self):
-        self.shutdown()
+        # Step 5: Visualize
+        o3d.visualization.draw_geometries([ground_cloud.paint_uniform_color([0,1,0]), 
+                                        obstacle_cloud.paint_uniform_color([1,0,0])])
