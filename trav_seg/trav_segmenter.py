@@ -157,6 +157,21 @@ class TravSegmenter:
     def save_frame(self, save_path):
         """Saves the current frame (color, point cloud, mask)"""
         scipy.io.savemat(save_path, {"rgb": self.color_frame, "pc": self.xyz, "mask": self.all_mask})
+
+    def get_free_xy(self):
+        return self.xyz[self.all_mask.reshape((-1, ), order='C'), :2]
+
+    def get_occ_xy(self):
+        return self.xyz[np.logical_not(self.all_mask.reshape((-1, ), order='C')), :2]
+
+    def transform_point_cloud_(self, p: np.ndarray, R: np.ndarray):
+        """Transforms the current point cloud by the given transform
+
+        Args:
+            p (np.ndarray): (3,) position array for the transformation
+            R (np.ndarray): (3, 3) rotation matrix for the transformation
+        """
+        self.xyz = (R @ self.xyz.T).T + p
         
     def generate_segment_mask_(self):
         """Generates the segmentation mask from the output of the segmenter.
