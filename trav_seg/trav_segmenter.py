@@ -72,6 +72,7 @@ class TravSegmenter:
         self.align = rs.align(rs.stream.color)
 
         # O3D Visualization
+        self.o3d_vis = o3d_vis
         if o3d_vis:
             self.ground_cloud = o3d.geometry.PointCloud()
             self.obstacle_cloud = o3d.geometry.PointCloud()
@@ -159,10 +160,10 @@ class TravSegmenter:
         scipy.io.savemat(save_path, {"rgb": self.color_frame, "pc": self.xyz, "mask": self.all_mask})
 
     def get_free_xy(self):
-        return self.xyz[self.all_mask.reshape((-1, ), order='C'), :2]
+        return self.xyz[self.flat_mask, :2]
 
     def get_occ_xy(self):
-        return self.xyz[np.logical_not(self.all_mask.reshape((-1, ), order='C')), :2]
+        return self.xyz[np.logical_not(self.flat_mask), :2]
 
     def transform_point_cloud_(self, p: np.ndarray, R: np.ndarray):
         """Transforms the current point cloud by the given transform
@@ -178,7 +179,9 @@ class TravSegmenter:
         """
         if self.out_obj_ids is None:
             return
+
         self.all_mask = np.any((self.out_mask_logits.permute(0, 2, 3, 1) > 0.0).cpu().numpy(), axis=0).astype(bool)
+        self.flat_mask = self.all_mask.reshape((-1, ), order='C')
     
     def on_mouse_(self, event, x, y, flags, param):
         """Mouse callback
@@ -213,7 +216,8 @@ class TravSegmenter:
             self.pipeline.stop()
             self.pipeline_started = False
         cv2.destroyAllWindows()
-        self.vis.destroy_window()
+        if self.o3d_vis:
+            self.vis.destroy_window()
         
     def __del__(self):
         """Deletes this object

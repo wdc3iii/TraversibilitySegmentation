@@ -1,4 +1,7 @@
+import random
 import numpy as np
+from sklearn.cluster import KMeans
+from scipy.spatial import ConvexHull
 from trav_seg.trav_segmenter import TravSegmenter
 
 
@@ -8,21 +11,27 @@ class LocalMapper:
     OCC = 100
     UNKNOWN = -1
 
-    def __init__(self, disc: float, dim: int, K: int, initial_free_radius: float, recenter_thresh):
-        """Initializes a LocalMapper object
+    def __init__(self, disc: float, dim: int, K: int, initial_free_radius: float, recenter_thresh: float, buffer_mult: float=1.2, max_eig: float=1):
+        """nitializes a LocalMapper object
 
         Args:
             disc (float): spatial discretization in meters
             dim (int): number of grid cells in the map
             K (int): number of free space regions to identify
             init_free_radius (float): radius around the robot to initially assume is free
+            recenter_thresh (float): Distance from the center of the map the robot can move before recentering
+            buffer_mult (float, optional): Proportion of the best-fit ellipse to use. Defaults to 1.2.
+            max_eig (float, optional): Minimum size ellipse to consider. Defaults to 1.
         """
         self.occ_grid = np.ones((dim, dim), dtype=int) * self.UNKNOWN
         self.disc = disc
         self.recenter_thresh = recenter_thresh
+        self.buffer_mult = buffer_mult
+        self.max_eig = max_eig
         self.trav_seg = TravSegmenter(record=False, o3d_vis=False, print_timing=False)
 
         self.K = K
+        self.rng = random.Random(42)  # Seed for reproducibility
 
         mid = dim // 2
         dx = int(initial_free_radius // disc)
@@ -31,6 +40,8 @@ class LocalMapper:
         # Assumes hopper gets dropped at (or around) [0, 0]
         self.map_origin = np.array([-mid *  self.disc, -mid * self.disc])
         
+        self.kmeans = None
+        self.labels = None
         self.prompt_seg()
 
     @property
@@ -51,12 +62,34 @@ class LocalMapper:
     def fit_free_space(self):
         """Fits a set of K convex polytopes to the free space
         """
-        # TODO: Fit the free space
+        # Separate free and occupied points
+        self.free_pts = self.trav_seg.get_free_xy()
+        self.occ_pts = self.trav_seg.get_occ_xy()
+        # Run kmeans
+        self.kmeans = KMeans(
+            n_clusters=self.K,
+            n_init="auto",
+            random_state=self.rng.randint(0, 100000),
+            init=self.kmeans.cluster_centers_ if self.kmeans is not None else 'k-means++',
+            tol=self.disc / 5
+        )
+        print("kmeans...")
+        self.labels = self.kmeans.fit_predict(self.free_pts)
     
-    def cluster_free_space_(self):
-        """Clusters the free space into K sections using gaussian mixture models
-        """
-        raise NotImplementedError
+        # Assemble polytopes
+        self.polytopes = []
+        for i in range(self.K):
+            print(f"i={i}")
+            for j in range(i, self.K):
+                print(f"\tj={j}")
+                cluster_inds = (self.labels == i) | (self.labels == j)
+                b = np.mean(self.free_pts[cluster_inds], axis=0)
+                A = np.cov(self.free_pts[cluster_inds], rowvar=False)
+                d, v = np.linalg.eig(A)
+                self.fit_polytope(
+                    v @ np.diag(np.minimum(np.sqrt(d), self.max_eig)) * np.sqrt(5.991),
+                    b
+                )
     
     def fit_polytope(self, A: np.ndarray, b: np.ndarray):
         """Fits a convex polytope within the free space using 
@@ -65,7 +98,30 @@ class LocalMapper:
             A (np.ndarray): A matrix describing the axes of the ellipse
             b (np.ndarray): b vector describing the center of the ellipse
         """
-        raise NotImplementedError
+        # Select points to transform
+        # TODO: wrong points to transform!!
+        trans_points = (np.linalg.inv(A) @ (self.trav_seg.xyz[:, :2].T - b[:, None])).T
+        norm_points = np.linalg.norm(trans_points, axis=-1, keepdims=True)
+        keep_pts = (np.squeeze(norm_points) <= self.buffer_mult) & np.logical_not(self.trav_seg.flat_mask)
+        trans_points = trans_points[keep_pts, :]
+        norm_points = norm_points[keep_pts] + 1e-6
+
+        # Transform the points
+        trans_points *= (2 * self.buffer_mult - norm_points) / norm_points
+        conv_hull = ConvexHull(trans_points)
+        ext_pts = trans_points[conv_hull.vertices]
+        ext_pts_norm = np.linalg.norm(ext_pts, axis=-1, keepdims=True)
+        ext_pts *= (2 * self.buffer_mult - ext_pts_norm) / ext_pts_norm
+
+        ext_pts = (A @ ext_pts.T + b[:, None]).T
+
+        edges = trans_points[conv_hull.simplices]
+        edge_0, edge_1 = edges[:, 0, :], edges[:, 1, :]
+        edge = edge_1 - edge_0
+        normal = np.hstack([-edge[:, 0, None], edge[:, 1, None]])
+        normal = np.where(np.sum(normal * (b[None, :] - edge_0), axis=1, keepdims=True) > 0, -normal, normal)
+        offset = np.sum(normal * edge_0, axis=1)
+        self.polytopes.append({'vertices': ext_pts, 'A': normal, 'b': offset})  # A <= b
 
     def update_occ_grid(self, pos: np.ndarray):
         """_summary_
@@ -115,3 +171,11 @@ class LocalMapper:
         x_inds = np.clip(inds[:, 0], 0, self.occ_grid.shape[1] - 1)
         y_inds = np.clip(inds[:, 1], 0, self.occ_grid.shape[0] - 1)
         return y_inds, x_inds
+
+    def shutdown(self):
+        self.trav_seg.shutdown()
+
+    def __del__(self):
+        """Deletes this object
+        """
+        self.shutdown()
