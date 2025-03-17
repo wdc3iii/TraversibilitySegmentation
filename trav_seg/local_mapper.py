@@ -11,7 +11,8 @@ class LocalMapper:
     OCC = 100
     UNKNOWN = -1
 
-    def __init__(self, disc: float, dim: int, K: int, initial_free_radius: float, recenter_thresh: float, buffer_mult: float=1.2, max_eig: float=1):
+    def __init__(self, disc: float, dim: int, K: int, initial_free_radius: float, recenter_thresh: float,
+                 buffer_mult: float=1.2, max_eig: float=1, min_keep_pts: int=10):
         """nitializes a LocalMapper object
 
         Args:
@@ -24,10 +25,14 @@ class LocalMapper:
             max_eig (float, optional): Minimum size ellipse to consider. Defaults to 1.
         """
         self.occ_grid = np.ones((dim, dim), dtype=int) * self.UNKNOWN
+        x_locs = np.repeat(np.arange(self.occ_grid.shape[1])[None, :], self.occ_grid.shape[0], axis=0) * disc + disc / 2
+        y_locs = np.repeat(np.arange(self.occ_grid.shape[0])[:, None], self.occ_grid.shape[1], axis=1) * disc + disc / 2
+        self.locs = np.hstack((x_locs.flatten()[:, None], y_locs.flatten()[:, None]))
         self.disc = disc
         self.recenter_thresh = recenter_thresh
         self.buffer_mult = buffer_mult
         self.max_eig = max_eig
+        self.min_keep_pts = min_keep_pts
         self.trav_seg = TravSegmenter(record=False, o3d_vis=False, print_timing=False)
 
         self.K = K
@@ -42,6 +47,7 @@ class LocalMapper:
         
         self.kmeans = None
         self.labels = None
+        self.free_mask = None
         self.prompt_seg()
 
     @property
@@ -63,8 +69,8 @@ class LocalMapper:
         """Fits a set of K convex polytopes to the free space
         """
         # Separate free and occupied points
-        self.free_pts = self.trav_seg.get_free_xy()
-        self.occ_pts = self.trav_seg.get_occ_xy()
+        self.free_mask = self.occ_grid.flatten() == self.FREE
+        free_pts = self.locs[self.free_mask, :] + self.map_origin
         # Run kmeans
         self.kmeans = KMeans(
             n_clusters=self.K,
@@ -73,18 +79,15 @@ class LocalMapper:
             init=self.kmeans.cluster_centers_ if self.kmeans is not None else 'k-means++',
             tol=self.disc / 5
         )
-        print("kmeans...")
-        self.labels = self.kmeans.fit_predict(self.free_pts)
+        self.labels = self.kmeans.fit_predict(free_pts)
     
-        # Assemble polytopes
         self.polytopes = []
         for i in range(self.K):
-            print(f"i={i}")
             for j in range(i, self.K):
-                print(f"\tj={j}")
+                # print(f"i={i}, j={j}")
                 cluster_inds = (self.labels == i) | (self.labels == j)
-                b = np.mean(self.free_pts[cluster_inds], axis=0)
-                A = np.cov(self.free_pts[cluster_inds], rowvar=False)
+                b = np.mean(free_pts[cluster_inds], axis=0)
+                A = np.cov(free_pts[cluster_inds], rowvar=False)
                 d, v = np.linalg.eig(A)
                 self.fit_polytope(
                     v @ np.diag(np.minimum(np.sqrt(d), self.max_eig)) * np.sqrt(5.991),
@@ -100,9 +103,12 @@ class LocalMapper:
         """
         # Select points to transform
         # TODO: wrong points to transform!!
-        trans_points = (np.linalg.inv(A) @ (self.trav_seg.xyz[:, :2].T - b[:, None])).T
+        trans_points = (np.linalg.inv(A) @ ((self.locs + self.map_origin).T - b[:, None])).T
         norm_points = np.linalg.norm(trans_points, axis=-1, keepdims=True)
-        keep_pts = (np.squeeze(norm_points) <= self.buffer_mult) & np.logical_not(self.trav_seg.flat_mask)
+        keep_pts = (np.squeeze(norm_points) <= self.buffer_mult) & np.logical_not(self.free_mask)
+        if np.sum(keep_pts) < self.min_keep_pts:
+            print("Not enough points to transform.")
+            return
         trans_points = trans_points[keep_pts, :]
         norm_points = norm_points[keep_pts] + 1e-6
 

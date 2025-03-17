@@ -5,15 +5,20 @@ from trav_seg.local_mapper import LocalMapper
 
 window_name = "Occupancy Grid with Polytopes"
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-cv2.resizeWindow(window_name, 1200, 1200)  # Set window size
-im_scale = 5
+cv2.resizeWindow(window_name, 1600, 1600)  # Set window size
+im_scale = 3
 local_mapper = LocalMapper(0.05, 200, 5, 0.25, 0.5)
 
 try:
     while True:
         # First, capture the frame
         print("Capture Frame")
-        local_mapper.capture_frame(np.zeros(3,), np.eye(3))
+        R = np.array([
+            [-0.38651647, -0.51541878, -0.76481926],
+            [ 0.23052047,  0.74895726, -0.62122729],
+            [ 0.89300914, -0.41642107, -0.17066974]
+        ])
+        local_mapper.capture_frame(np.zeros(3,), R)
 
         # Run Segmenting
         print("Segment Frame")
@@ -34,12 +39,13 @@ try:
         grid_img[grid_img < 0] = 150                        # Unknown
         grid_img = grid_img.astype(np.uint8)  # Assuming 1 = occupied, 0 = free
         grid_img = cv2.cvtColor(grid_img, cv2.COLOR_GRAY2BGR)  # Convert to BGR for overlaying polytopes
-        grid_img = cv2.resize(grid_img, (grid_img.shape[0] * im_scale, grid_img.shape[0] * im_scale), interpolation=cv2.INTER_LINEAR)
+        # grid_img = cv2.resize(grid_img, (grid_img.shape[0] * im_scale, grid_img.shape[0] * im_scale), interpolation=cv2.INTER_LINEAR)
 
         # Overlay polytopes
         for polytope in local_mapper.polytopes:
             vertices = polytope['vertices']
-            vertices = np.vstack(local_mapper.xy_to_ind_(vertices)).T * im_scale  # Ensure integer format for OpenCV
+            vy, vx = local_mapper.xy_to_ind_(vertices)
+            vertices = np.vstack((vx, vy)).T  # Ensure integer format for OpenCV
             if vertices.shape[0] > 2:  # Only plot if it's a valid polygon
                 # cv2.polylines(grid_img, [vertices], isClosed=True, color=(255, 0, 0), thickness=2)  # Blue outline
                 cv2.fillPoly(grid_img, [vertices], color=(255, 0, 0, 50))  # Semi-transparent fill
