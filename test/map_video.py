@@ -7,7 +7,7 @@ window_name = "Occupancy Grid with Polytopes"
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 cv2.resizeWindow(window_name, 1600, 1600)  # Set window size
 im_scale = 3
-local_mapper = LocalMapper(0.05, 200, 5, 0.25, 0.5)
+local_mapper = LocalMapper(0.05, 200, 5, 0.25, 0.5, local_prompt=True)
 
 try:
     while True:
