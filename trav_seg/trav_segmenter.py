@@ -67,6 +67,7 @@ class TravSegmenter:
         self.save_flag = False
         self.frame_idx = 0
         self.all_mask  = None
+        self.valid_pts = None
 
         # RANSAC parameters
         self.rnsc_dist_thresh = rnsc_dist_thres
@@ -135,7 +136,8 @@ class TravSegmenter:
         # Convert to numpy array
         v = np.asanyarray(points.get_vertices())  # xyz points
         self.xyz = np.column_stack((v['f0'], v['f1'], v['f2'])).astype(np.float64, copy=False)  # Ensure correct dtype without unnecessary copy, critical for timing
-        # self.xyz = self.xyz[np.linalg.norm(self.xyz, axis=-1) >= self.min_depth, :]
+        self.valid_pts = np.linalg.norm(self.xyz, axis=-1) >= self.min_depth
+        self.xyz = self.xyz[self.valid_pts]
 
         if self.print_timing:
             print(f"Timing Image Cap: {(time.perf_counter_ns() - t0) / 1e6}ms")
@@ -176,10 +178,13 @@ class TravSegmenter:
         scipy.io.savemat(save_path, {"rgb": self.color_frame, "pc": self.xyz, "mask": self.all_mask})
 
     def get_free_xy(self):
-        return self.xyz[self.flat_mask, :2]
+        return self.xyz[self.flat_mask[self.valid_pts], :2]
 
     def get_occ_xy(self):
-        return self.xyz[np.logical_not(self.flat_mask), :2]
+        return self.xyz[np.logical_not(self.flat_mask[self.valid_pts]), :2]
+    
+    def get_flat_mask(self):
+        return self.flat_mask[self.valid_pts]
 
     def transform_point_cloud_(self, p: np.ndarray, R: np.ndarray):
         """Transforms the current point cloud by the given transform

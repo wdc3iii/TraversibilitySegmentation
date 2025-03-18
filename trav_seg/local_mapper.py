@@ -88,8 +88,13 @@ class LocalMapper:
             for j in range(i, self.K):
                 # print(f"i={i}, j={j}")
                 cluster_inds = (self.labels == i) | (self.labels == j)
-                b = np.mean(free_pts[cluster_inds], axis=0)
-                A = np.cov(free_pts[cluster_inds], rowvar=False)
+                free_cluster = free_pts[cluster_inds]
+                b = np.mean(free_cluster, axis=0)
+                ind = np.argmin(np.linalg.norm(free_cluster - b, axis=-1))
+                b = free_cluster[ind, :]
+                # A = np.cov(free_pts[cluster_inds], rowvar=False)
+                var = free_cluster - b
+                A = 1 / (free_cluster.shape[0] - 1) * var.T @ var
                 d, v = np.linalg.eig(A)
                 self.fit_polytope(
                     v @ np.diag(np.minimum(np.sqrt(d), self.max_eig)) * np.sqrt(5.991),
