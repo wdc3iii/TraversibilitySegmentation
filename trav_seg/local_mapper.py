@@ -12,7 +12,7 @@ class LocalMapper:
     UNKNOWN = -1
 
     def __init__(self, disc: float, dim: int, K: int, initial_free_radius: float, recenter_thresh: float,
-                 buffer_mult: float=1.2, max_eig: float=1, min_keep_pts: int=10):
+                 buffer_mult: float=1.2, max_eig: float=1, min_keep_pts: int=10, local_prompt: bool=False):
         """nitializes a LocalMapper object
 
         Args:
@@ -33,7 +33,8 @@ class LocalMapper:
         self.buffer_mult = buffer_mult
         self.max_eig = max_eig
         self.min_keep_pts = min_keep_pts
-        self.trav_seg = TravSegmenter(record=False, o3d_vis=False, print_timing=False)
+        self.local_prompt = local_prompt
+        self.trav_seg = TravSegmenter(record=False, o3d_vis=False, print_timing=False, local_prompt=self.local_prompt)
 
         self.K = K
         self.rng = random.Random(42)  # Seed for reproducibility
@@ -48,7 +49,8 @@ class LocalMapper:
         self.kmeans = None
         self.labels = None
         self.free_mask = None
-        self.prompt_seg()
+        if self.local_prompt:
+            self.prompt_seg()
 
     @property
     def map_center(self):

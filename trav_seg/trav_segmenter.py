@@ -65,6 +65,8 @@ class TravSegmenter:
         self.inliers = None
         self.print_timing = print_timing
         self.save_flag = False
+        self.frame_idx = 0
+        self.all_mask  = None
 
         # RANSAC parameters
         self.rnsc_dist_thresh = rnsc_dist_thres
@@ -97,13 +99,19 @@ class TravSegmenter:
 
         # CV2 window for camera control
         self.curr_group = 0
-        self.reprompt_segment = False
         self.local_prompt = local_prompt
+        self.prompt_completed = False
         if self.local_prompt:
             self.seg_vis_win_name = "Camera Control"
             cv2.namedWindow(self.seg_vis_win_name, cv2.WINDOW_GUI_NORMAL)
             cv2.resizeWindow(self.seg_vis_win_name, (960, 540))
             cv2.setMouseCallback(self.seg_vis_win_name, self.on_mouse_)
+        else:
+            self.capture_frame()
+            color_image = np.asanyarray(self.color_frame.get_data())
+            self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+            self.predictor.load_first_frame(self.seg_frame)
+
     
     def start_pipeline(self):
         """Starts the camera pipeline (if not already started)
@@ -127,10 +135,7 @@ class TravSegmenter:
         # Convert to numpy array
         v = np.asanyarray(points.get_vertices())  # xyz points
         self.xyz = np.column_stack((v['f0'], v['f1'], v['f2'])).astype(np.float64, copy=False)  # Ensure correct dtype without unnecessary copy, critical for timing
-        self.xyz = self.xyz[np.linalg.norm(self.xyz, axis=-1, keepdims=True) >= self.min_depth]
-        if self.reprompt_segment:
-            self.prompt_seg()
-            self.reprompt_segment = False
+        # self.xyz = self.xyz[np.linalg.norm(self.xyz, axis=-1) >= self.min_depth, :]
 
         if self.print_timing:
             print(f"Timing Image Cap: {(time.perf_counter_ns() - t0) / 1e6}ms")
@@ -148,18 +153,23 @@ class TravSegmenter:
         while self.curr_group != 13:  # for 'enter' key
             self.generate_segment_mask_()
             self.update_seg_vis()
+        self.prompt_completed = True
 
     def segment_frame(self):
         """Segments the current frame
         """
+        if not self.prompt_completed:
+            return False
         t0 = time.perf_counter_ns()
         color_image = np.asanyarray(self.color_frame.get_data())
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
         self.out_obj_ids, self.out_mask_logits = self.predictor.track(self.seg_frame)
+        self.frame_idx += 1
         self.generate_segment_mask_()
 
         if self.print_timing:
             print(f"Segmenting: {(time.perf_counter_ns() - t0) / 1e6}ms")
+        return True
 
     def save_frame(self, save_path):
         """Saves the current frame (color, point cloud, mask)"""
@@ -189,10 +199,10 @@ class TravSegmenter:
         self.all_mask = np.any((self.out_mask_logits.permute(0, 2, 3, 1) > 0.0).cpu().numpy(), axis=0).astype(bool)
         self.flat_mask = self.all_mask.reshape((-1, ), order='C')
     
-    def add_prompt(self, group, label, x, y):
+    def add_prompt(self, group, label, x, y, prompt_idx):
         event = cv2.EVENT_LBUTTONDOWN if label else cv2.EVENT_RBUTTONDOWN
         self.curr_group = group
-        self.on_mouse_(event, x, y, None, None)
+        self.on_mouse_(event, x, y, None, prompt_idx)
 
     def on_mouse_(self, event, x, y, flags, param):
         """Mouse callback
@@ -218,7 +228,14 @@ class TravSegmenter:
             self.click_labels[self.curr_group] = np.empty(0, dtype=np.int32)
         self.click_points[self.curr_group] = np.append(self.click_points[self.curr_group], new_point, axis=0)
         self.click_labels[self.curr_group] = np.append(self.click_labels[self.curr_group], new_label)
-        _, self.out_obj_ids, self.out_mask_logits = self.predictor.add_new_prompt(frame_idx=0, obj_id=self.curr_group, points=new_point,labels=new_label)
+        _, self.out_obj_ids, self.out_mask_logits = self.predictor.add_new_prompt(
+            frame_idx=param if param is not None else 0,
+            obj_id=self.curr_group,
+            points=new_point,
+            labels=new_label
+        )
+        self.generate_segment_mask_()
+        self.prompt_completed = True
 
     def shutdown(self):
         """Shuts down the camera pipeline
