@@ -11,11 +11,11 @@ from efficient_track_anything.build_efficienttam import build_efficienttam_camer
 class TravSegmenter:
 
     def __init__(
-            self, width=640, height=480, frame_rate=30,
+            self, width=640, height=480, frame_rate=30, min_depth=0.1,
             rnsc_dist_thres=0.05, rnsc_n0=3, rnsc_iters=1000,
             record=False, record_fn='output.bag', print_timing=False,
             from_file=False, input_file=None, loop_playback=False,
-            o3d_vis=False,
+            o3d_vis=False, local_prompt=False,
             checkpoint="/home/noelcs/repos/my_tam/checkpoints/efficienttam_ti_512x512.pt",
             model_cfg="configs/efficienttam/efficienttam_ti_512x512.yaml"):
         """Instantiates an object to segment traversible regions from the environment
@@ -24,6 +24,7 @@ class TravSegmenter:
             width (int, optional): _description_. Defaults to 640.
             height (int, optional): _description_. Defaults to 480.
             frame_rate (int, optional): _description_. Defaults to 30.
+            min_depth (float, optional): _description_. Defaults to 0.1.
             rnsc_dist_thres (float, optional): _description_. Defaults to 0.05.
             rnsc_n0 (int, optional): _description_. Defaults to 3.
             rnsc_iters (int, optional): _description_. Defaults to 1000.
@@ -34,6 +35,7 @@ class TravSegmenter:
             input_file (_type_, optional): _description_. Defaults to None.
             loop_playback (bool, optional): _description_. Defaults to False.
             o3d_vis (bool, optional): _description_. Defaults to False.
+            local_prompt(bool, optional): _description_. Defaults to False.
             checkpoint (str, optional): _description_. Defaults to "/home/noelcs/repos/my_tam/checkpoints/efficienttam_ti_512x512.pt".
             model_cfg (str, optional): _description_. Defaults to "configs/efficienttam/efficienttam_ti_512x512.yaml".
         """
@@ -53,6 +55,7 @@ class TravSegmenter:
         self.start_pipeline()
 
         # Frames and pointclouds
+        self.min_depth = min_depth
         self.depth_frame = None
         self.color_frame = None
         self.pc = rs.pointcloud()
@@ -95,11 +98,12 @@ class TravSegmenter:
         # CV2 window for camera control
         self.curr_group = 0
         self.reprompt_segment = False
-        
-        self.seg_vis_win_name = "Camera Control"
-        cv2.namedWindow(self.seg_vis_win_name, cv2.WINDOW_GUI_NORMAL)
-        cv2.resizeWindow(self.seg_vis_win_name, (960, 540))
-        cv2.setMouseCallback(self.seg_vis_win_name, self.on_mouse_)
+        self.local_prompt = local_prompt
+        if self.local_prompt:
+            self.seg_vis_win_name = "Camera Control"
+            cv2.namedWindow(self.seg_vis_win_name, cv2.WINDOW_GUI_NORMAL)
+            cv2.resizeWindow(self.seg_vis_win_name, (960, 540))
+            cv2.setMouseCallback(self.seg_vis_win_name, self.on_mouse_)
     
     def start_pipeline(self):
         """Starts the camera pipeline (if not already started)
@@ -123,7 +127,7 @@ class TravSegmenter:
         # Convert to numpy array
         v = np.asanyarray(points.get_vertices())  # xyz points
         self.xyz = np.column_stack((v['f0'], v['f1'], v['f2'])).astype(np.float64, copy=False)  # Ensure correct dtype without unnecessary copy, critical for timing
-
+        self.xyz = self.xyz[np.linalg.norm(self.xyz, axis=-1, keepdims=True) >= self.min_depth]
         if self.reprompt_segment:
             self.prompt_seg()
             self.reprompt_segment = False
@@ -134,6 +138,8 @@ class TravSegmenter:
     def prompt_seg(self):
         """Allows the user to select a set of points with which to prompt the segmenter.
         """
+        if not self.local_prompt:
+            raise RuntimeError("Trav Segmenter not initialized to allow local prompting. Prompt via add_prompt()")
         if self.color_frame is None:
             self.capture_frame()
         color_image = np.asanyarray(self.color_frame.get_data())
@@ -183,6 +189,11 @@ class TravSegmenter:
         self.all_mask = np.any((self.out_mask_logits.permute(0, 2, 3, 1) > 0.0).cpu().numpy(), axis=0).astype(bool)
         self.flat_mask = self.all_mask.reshape((-1, ), order='C')
     
+    def add_prompt(self, group, label, x, y):
+        event = cv2.EVENT_LBUTTONDOWN if label else cv2.EVENT_RBUTTONDOWN
+        self.curr_group = group
+        self.on_mouse_(event, x, y, None, None)
+
     def on_mouse_(self, event, x, y, flags, param):
         """Mouse callback
 
