@@ -133,7 +133,7 @@ class LocalMapper:
 
         A_poly, b_poly = self.compute_polytope_from_points(star_pts)
 
-        if np.all(A_poly @ b <= b_poly):
+        if np.all(A_poly @ b < b_poly):
             halfspaces = HalfspaceIntersection(np.hstack((A_poly, -b_poly[:, None])), b)
             self.polytopes.append({'vertices': halfspaces.intersections, 'A': A_poly, 'b': b_poly})  # A <= b
 
@@ -149,7 +149,6 @@ class LocalMapper:
         star_ind_0 = vrt[-1]
         A = np.zeros((conv_hull.equations.shape[0], 2))
         b = np.zeros((conv_hull.equations.shape[0],))
-        # ext_pts = np.zeros((A.shape[0], 2))
 
         a0, b0 = LocalMapper.get_constraint(constraint_ind, star_pts, vrt)
 
@@ -159,13 +158,6 @@ class LocalMapper:
             if star_ind == vrt[constraint_ind]:
                 A[constraint_ind] = a0
                 b[constraint_ind] = b0 + max_buffer
-                # if constraint_ind > 0:
-                #     ext_pts[constraint_ind] = LocalMapper.compute_line_intersection(
-                #         A[constraint_ind],
-                #         b[constraint_ind],
-                #         A[constraint_ind - 1],
-                #         b[constraint_ind - 1]
-                #     )
                 max_buffer = 0
                 constraint_ind += 1
                 a0, b0 = LocalMapper.get_constraint(constraint_ind, star_pts, vrt)
@@ -173,12 +165,6 @@ class LocalMapper:
                 buf = np.dot(a0, star_pts[star_ind]) - b0
                 if buf < max_buffer:
                     max_buffer = buf
-        # ext_pts[0] = LocalMapper.compute_line_intersection(
-        #     A[0],
-        #     b[0],
-        #     A[-1],
-        #     b[-1]
-        # )
 
         return A, b
 
