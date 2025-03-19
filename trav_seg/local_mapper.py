@@ -74,6 +74,10 @@ class LocalMapper:
         with self.trav_seg_lock:
             self.trav_seg.segment_frame()
 
+    def reset_first_frame(self):
+        with self.trav_seg_lock:
+            self.trav_seg.reset_first_frame()
+
     def fit_free_space(self):
         """Fits a set of K convex polytopes to the free space
         """

@@ -67,6 +67,7 @@ class TravSegmenter:
         self.save_flag = False
         self.all_mask  = None
         self.valid_pts = None
+        self.prompted = False
 
         # RANSAC parameters
         self.rnsc_dist_thresh = rnsc_dist_thres
@@ -107,11 +108,7 @@ class TravSegmenter:
             cv2.resizeWindow(self.seg_vis_win_name, (960, 540))
             cv2.setMouseCallback(self.seg_vis_win_name, self.on_mouse_)
         else:
-            self.capture_frame()
-            color_image = np.asanyarray(self.color_frame.get_data())
-            self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
-            self.predictor.load_first_frame(self.seg_frame)
-
+            self.reset_first_frame()
     
     def start_pipeline(self):
         """Starts the camera pipeline (if not already started)
@@ -205,6 +202,14 @@ class TravSegmenter:
         self.curr_group = group
         self.on_mouse_(event, x, y, None, None)
 
+    def reset_first_frame(self):
+        if self.prompted:
+            self.predictor.reset_state()
+        self.capture_frame()
+        color_image = np.asanyarray(self.color_frame.get_data())
+        self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+        self.predictor.load_first_frame(self.seg_frame)
+
     def on_mouse_(self, event, x, y, flags, param):
         """Mouse callback
 
@@ -217,6 +222,7 @@ class TravSegmenter:
         """
         if event == cv2.EVENT_MBUTTONDOWN:
             self.reprompt_segment = True
+            self.reset_first_frame()
             return
         if event != cv2.EVENT_LBUTTONDOWN and event != cv2.EVENT_RBUTTONDOWN:
             return
@@ -235,6 +241,7 @@ class TravSegmenter:
             points=new_point,
             labels=new_label
         )
+        self.prompted = True
         self.generate_segment_mask_()
 
     def shutdown(self):
