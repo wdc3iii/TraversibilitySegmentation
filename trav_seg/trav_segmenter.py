@@ -11,50 +11,57 @@ from efficient_track_anything.build_efficienttam import build_efficienttam_camer
 class TravSegmenter:
 
     def __init__(
-            self, width=640, height=480, frame_rate=30, min_depth=0.1,
-            rnsc_dist_thres=0.05, rnsc_n0=3, rnsc_iters=1000,
-            record=False, record_fn='output.bag', print_timing=False,
-            from_file=False, input_file=None, loop_playback=False,
-            o3d_vis=False, local_prompt=False,
-            checkpoint="/home/noelcs/repos/my_tam/checkpoints/efficienttam_ti_512x512.pt",
-            model_cfg="configs/efficienttam/efficienttam_ti_512x512.yaml"):
+            self, width:int=640, height:int=480, frame_rate:float=30, min_depth:float=0.1,
+            rnsc_dist_thres:float=0.05, rnsc_n0:int=3, rnsc_iters:int=1000,
+            record:bool=False, record_fn:str='output.bag', print_timing:bool=False,
+            from_file:bool=False, input_file:str=None, loop_playback:bool=False,
+            o3d_vis:bool=False, local_prompt:bool=False,
+            checkpoint:str="/home/noelcs/repos/my_tam/checkpoints/efficienttam_ti_512x512.pt",
+            model_cfg:str="configs/efficienttam/efficienttam_ti_512x512.yaml"):
         """Instantiates an object to segment traversible regions from the environment
 
         Args:
-            width (int, optional): _description_. Defaults to 640.
-            height (int, optional): _description_. Defaults to 480.
-            frame_rate (int, optional): _description_. Defaults to 30.
-            min_depth (float, optional): _description_. Defaults to 0.1.
-            rnsc_dist_thres (float, optional): _description_. Defaults to 0.05.
-            rnsc_n0 (int, optional): _description_. Defaults to 3.
-            rnsc_iters (int, optional): _description_. Defaults to 1000.
-            record (bool, optional): _description_. Defaults to False.
-            record_fn (str, optional): _description_. Defaults to 'output.bag'.
-            print_timing (bool, optional): _description_. Defaults to False.
-            from_file (bool, optional): _description_. Defaults to False.
-            input_file (_type_, optional): _description_. Defaults to None.
-            loop_playback (bool, optional): _description_. Defaults to False.
-            o3d_vis (bool, optional): _description_. Defaults to False.
-            local_prompt(bool, optional): _description_. Defaults to False.
-            checkpoint (str, optional): _description_. Defaults to "/home/noelcs/repos/my_tam/checkpoints/efficienttam_ti_512x512.pt".
-            model_cfg (str, optional): _description_. Defaults to "configs/efficienttam/efficienttam_ti_512x512.yaml".
+            width (int, optional): width of the image pipeline. Defaults to 640.
+            height (int, optional): height of the image pipeline. Defaults to 480.
+            frame_rate (int, optional): frame rate of image pipeline. Defaults to 30.
+            min_depth (float, optional): minimum depth to process in point cloud. Defaults to 0.1.
+            rnsc_dist_thres (float, optional): RANSAC distance threshold. Defaults to 0.05.
+            rnsc_n0 (int, optional): RANSAC initial points. Defaults to 3.
+            rnsc_iters (int, optional): RANSAC iterations. Defaults to 1000.
+            record (bool, optional): Whether to record the camera output. Defaults to False.
+            record_fn (str, optional): Where to save the camera recording. Defaults to 'output.bag'.
+            print_timing (bool, optional): Whether to print timing information. Defaults to False.
+            from_file (bool, optional): Whether to load the camera stream from a file. Defaults to False.
+            input_file (str, optional): File to load camera stream from. Defaults to None.
+            loop_playback (bool, optional): Whether to loop camera stream from file playback. Defaults to False.
+            o3d_vis (bool, optional): Whether to visualize the point cloud in o3d. Defaults to False.
+            local_prompt(bool, optional): Whether to automatically trigger local prompting of segmenter. Defaults to False.
+            checkpoint (str, optional): Model to load for TAM. Defaults to "/home/noelcs/repos/my_tam/checkpoints/efficienttam_ti_512x512.pt".
+            model_cfg (str, optional): Model config to load for TAM. Defaults to "configs/efficienttam/efficienttam_ti_512x512.yaml".
         """
         # Set up the pipeline
         self.pipeline = rs.pipeline()
         self.config = rs.config()
+        # Loading from a file
         if from_file:
             assert input_file is not None
             self.config.enable_device_from_file(input_file, repeat_playback=loop_playback)
+        # Enable the live stream from camera
         else:
             self.config.enable_stream(rs.stream.depth, width, height, rs.format.z16, frame_rate)
             self.config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, frame_rate)
-        if record:
-            self.config.enable_record_to_file(record_fn)
 
+        # Align color and depth images
+        self.align = rs.align(rs.stream.color)
+
+        if record:
+            self.config.enable_record_to_file(record_fn)    # Establish file to record to
+
+        # Start the pipeline
         self.pipeline_started = False
         self.start_pipeline()
 
-        # Frames and pointclouds
+        # Frames, pointclouds, masks, ...
         self.min_depth = min_depth
         self.depth_frame = None
         self.color_frame = None
@@ -68,14 +75,14 @@ class TravSegmenter:
         self.all_mask  = None
         self.valid_pts = None
         self.prompted = False
+        self.curr_group = 0
+        self.local_prompt = local_prompt
+        self.prompt_completed = False
 
         # RANSAC parameters
         self.rnsc_dist_thresh = rnsc_dist_thres
         self.rnsc_n0 = rnsc_n0
         self.rnsc_iters = rnsc_iters
-
-        # Align color and depth images
-        self.align = rs.align(rs.stream.color)
 
         # O3D Visualization
         self.o3d_vis = o3d_vis
@@ -95,13 +102,10 @@ class TravSegmenter:
             hydra_overrides_extra=["++model.compile_image_encoder=False"], 
             apply_postprocessing=False,
         )
-        self.out_obj_ids, self.out_mask_logits, self.seg_frame = None, None, None
-        self.click_points, self.click_labels = {}, {}
+        self.out_obj_ids, self.out_mask_logits, self.seg_frame = None, None, None  # Segmenting arrays
+        self.click_points, self.click_labels = {}, {}                              # Storing click data
 
-        # CV2 window for camera control
-        self.curr_group = 0
-        self.local_prompt = local_prompt
-        self.prompt_completed = False
+        # CV2 window for local prompting
         if self.local_prompt:
             self.seg_vis_win_name = "Camera Control"
             cv2.namedWindow(self.seg_vis_win_name, cv2.WINDOW_GUI_NORMAL)
@@ -121,15 +125,18 @@ class TravSegmenter:
         """Captures the most recent frame from the camera pipeline, and extracts point cloud information
         """
         t0 = time.perf_counter_ns()
+        # Capture and align the frames
         frames = self.pipeline.wait_for_frames()
         aligned_frames = self.align.process(frames)
 
+        # Extract the depth and color frames
         self.depth_frame = aligned_frames.get_depth_frame()
         self.color_frame = aligned_frames.get_color_frame()
         
+        # Compute point cloud from depth
         points = self.pc.calculate(self.depth_frame)
 
-        # Convert to numpy array
+        # Convert point cloud to numpy array
         v = np.asanyarray(points.get_vertices())  # xyz points
         self.xyz = np.column_stack((v['f0'], v['f1'], v['f2'])).astype(np.float64, copy=False)  # Ensure correct dtype without unnecessary copy, critical for timing
         self.valid_pts = np.linalg.norm(self.xyz, axis=-1) >= self.min_depth
@@ -143,22 +150,32 @@ class TravSegmenter:
         """
         if not self.local_prompt:
             raise RuntimeError("Trav Segmenter not initialized to allow local prompting. Prompt via add_prompt()")
+
+        # Capture frame if one has not been captured yet.
         if self.color_frame is None:
             self.capture_frame()
+        # Create cv2 image to pass to TAM
         color_image = np.asanyarray(self.color_frame.get_data())
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+
+        # Set frame as the first frame
         self.predictor.load_first_frame(self.seg_frame)
-        while self.curr_group != 13:  # for 'enter' key
-            self.generate_segment_mask_()
-            self.update_seg_vis()
+
+        while self.curr_group != 13:  # wait for 'enter' key
+            self.generate_segment_mask_()   # Compute segment mask
+            self.update_seg_vis()           # Update the visualizer
         self.prompt_completed = True
 
     def segment_frame(self):
         """Segments the current frame
         """
         t0 = time.perf_counter_ns()
+
+        # Extract cv2 frame to send to TAM
         color_image = np.asanyarray(self.color_frame.get_data())
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+
+        # Apply tracking and generate mask
         self.out_obj_ids, self.out_mask_logits = self.predictor.track(self.seg_frame)
         self.generate_segment_mask_()
 
@@ -203,11 +220,15 @@ class TravSegmenter:
         self.on_mouse_(event, x, y, None, None)
 
     def reset_first_frame(self):
+        # Reset the predictor if it has been prompted already.
         if self.prompted:
             self.predictor.reset_state()
+        # Capture a frame and send to cv2
         self.capture_frame()
         color_image = np.asanyarray(self.color_frame.get_data())
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+
+        # Load frame into the predictor
         self.predictor.load_first_frame(self.seg_frame)
 
     def on_mouse_(self, event, x, y, flags, param):
