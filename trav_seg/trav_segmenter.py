@@ -160,8 +160,6 @@ class TravSegmenter:
     def segment_frame(self):
         """Segments the current frame
         """
-        if not self.prompt_completed:
-            return False
         t0 = time.perf_counter_ns()
         color_image = np.asanyarray(self.color_frame.get_data())
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
@@ -240,7 +238,6 @@ class TravSegmenter:
             labels=new_label
         )
         self.generate_segment_mask_()
-        self.prompt_completed = True
 
     def shutdown(self):
         """Shuts down the camera pipeline
