@@ -90,6 +90,9 @@ class LocalMapper:
                 # print(f"i={i}, j={j}")
                 cluster_inds = (self.labels == i) | (self.labels == j)
                 free_cluster = free_pts[cluster_inds]
+                if free_cluster.shape[0] < self.min_keep_pts:
+                    print("Not enough points to transform.")
+                    continue
                 b = np.mean(free_cluster, axis=0)
                 ind = np.argmin(np.linalg.norm(free_cluster - b, axis=-1))
                 b = free_cluster[ind, :]
@@ -110,7 +113,6 @@ class LocalMapper:
             b (np.ndarray): b vector describing the center of the ellipse
         """
         # Select points to transform
-        # TODO: wrong points to transform!!
         trans_points = (np.linalg.inv(A) @ ((self.locs + self.map_origin).T - b[:, None])).T
         norm_points = np.linalg.norm(trans_points, axis=-1, keepdims=True)
         keep_pts = (np.squeeze(norm_points) <= self.buffer_mult) & np.logical_not(self.free_mask)
