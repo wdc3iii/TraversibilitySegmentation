@@ -65,7 +65,6 @@ class TravSegmenter:
         self.inliers = None
         self.print_timing = print_timing
         self.save_flag = False
-        self.frame_idx = 0
         self.all_mask  = None
         self.valid_pts = None
 
@@ -164,7 +163,6 @@ class TravSegmenter:
         color_image = np.asanyarray(self.color_frame.get_data())
         self.seg_frame = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
         self.out_obj_ids, self.out_mask_logits = self.predictor.track(self.seg_frame)
-        self.frame_idx += 1
         self.generate_segment_mask_()
 
         if self.print_timing:
@@ -202,10 +200,10 @@ class TravSegmenter:
         self.all_mask = np.any((self.out_mask_logits.permute(0, 2, 3, 1) > 0.0).cpu().numpy(), axis=0).astype(bool)
         self.flat_mask = self.all_mask.reshape((-1, ), order='C')
     
-    def add_prompt(self, group, label, x, y, prompt_idx):
+    def add_prompt(self, group, label, x, y):
         event = cv2.EVENT_LBUTTONDOWN if label else cv2.EVENT_RBUTTONDOWN
         self.curr_group = group
-        self.on_mouse_(event, x, y, None, prompt_idx)
+        self.on_mouse_(event, x, y, None, None)
 
     def on_mouse_(self, event, x, y, flags, param):
         """Mouse callback
@@ -232,7 +230,7 @@ class TravSegmenter:
         self.click_points[self.curr_group] = np.append(self.click_points[self.curr_group], new_point, axis=0)
         self.click_labels[self.curr_group] = np.append(self.click_labels[self.curr_group], new_label)
         _, self.out_obj_ids, self.out_mask_logits = self.predictor.add_new_prompt(
-            frame_idx=param if param is not None else 0,
+            frame_idx=0,
             obj_id=self.curr_group,
             points=new_point,
             labels=new_label

@@ -1,9 +1,9 @@
 import random
+import threading
 import numpy as np
 from sklearn.cluster import KMeans
-from scipy.spatial import ConvexHull
 from trav_seg.trav_segmenter import TravSegmenter
-from scipy.spatial import HalfspaceIntersection
+from scipy.spatial import ConvexHull, HalfspaceIntersection
 
 
 class LocalMapper:
@@ -46,6 +46,10 @@ class LocalMapper:
 
         # Assumes hopper gets dropped at (or around) [0, 0]
         self.map_origin = np.array([-mid *  self.disc, -mid * self.disc])
+
+        # Threading locks
+        self.trav_seg_lock = threading.Lock()
+        self.occ_grid_lock = threading.Lock()
         
         self.kmeans = None
         self.labels = None
@@ -62,17 +66,20 @@ class LocalMapper:
         self.trav_seg.prompt_seg()
 
     def capture_frame(self, p, R):
-        self.trav_seg.capture_frame()
-        self.trav_seg.transform_point_cloud_(p, R)
+        with self.trav_seg_lock:
+            self.trav_seg.capture_frame()
+            self.trav_seg.transform_point_cloud_(p, R)
 
     def segment_frame(self):
-        self.trav_seg.segment_frame()
+        with self.trav_seg_lock:
+            self.trav_seg.segment_frame()
 
     def fit_free_space(self):
         """Fits a set of K convex polytopes to the free space
         """
         # Separate free and occupied points
-        self.free_mask = self.occ_grid.flatten() == self.FREE
+        with self.occ_grid_lock:
+            self.free_mask = self.occ_grid.flatten() == self.FREE
         free_pts = self.locs[self.free_mask, :] + self.map_origin
         # Run kmeans
         self.kmeans = KMeans(
@@ -209,29 +216,32 @@ class LocalMapper:
             self.map_origin += center_pos
             cells_to_move = center_pos // self.disc
             dx, dy = cells_to_move[0], cells_to_move[1]
-            if dx > 0:    # Move X up
-                self.occ_grid[:, dx:] = self.occ_grid[:, :-dx]
-                self.occ_grid[:, :dx] = self.UNKNOWN
-            else:
-                self.occ_grid[:, :-dx] = self.occ_grid[:, dx:]
-                self.occ_grid[:, -dx:] = self.UNKNOWN
+            with self.occ_grid_lock:
+                if dx > 0:    # Move X up
+                    self.occ_grid[:, dx:] = self.occ_grid[:, :-dx]
+                    self.occ_grid[:, :dx] = self.UNKNOWN
+                else:
+                    self.occ_grid[:, :-dx] = self.occ_grid[:, dx:]
+                    self.occ_grid[:, -dx:] = self.UNKNOWN
 
-            if dy > 0:    # Move X up
-                self.occ_grid[dy:, :] = self.occ_grid[:-dy, :]
-                self.occ_grid[:dy, :] = self.UNKNOWN
-            else:
-                self.occ_grid[:-dy, :] = self.occ_grid[dy:, :]
-                self.occ_grid[-dy:, :] = self.UNKNOWN
+                if dy > 0:    # Move X up
+                    self.occ_grid[dy:, :] = self.occ_grid[:-dy, :]
+                    self.occ_grid[:dy, :] = self.UNKNOWN
+                else:
+                    self.occ_grid[:-dy, :] = self.occ_grid[dy:, :]
+                    self.occ_grid[-dy:, :] = self.UNKNOWN
 
-        # Mark free points as free
-        free_pts = self.trav_seg.get_free_xy()
+        # Mark free points as free, occ_points as occ
+        with self.trav_seg_lock:
+            free_pts = self.trav_seg.get_free_xy()
+            occ_pts = self.trav_seg.get_occ_xy()
+        
         free_pts = self.crop_xy_to_map(free_pts)
-        self.occ_grid[self.xy_to_ind_(free_pts)] = self.FREE
-
-        # Mark occupied points as occupied
-        occ_pts = self.trav_seg.get_occ_xy()
         occ_pts = self.crop_xy_to_map(occ_pts)
-        self.occ_grid[self.xy_to_ind_(occ_pts)] = self.OCC
+
+        with self.occ_grid_lock:
+            self.occ_grid[self.xy_to_ind_(free_pts)] = self.FREE
+            self.occ_grid[self.xy_to_ind_(occ_pts)] = self.OCC
 
     def crop_xy_to_map(self, pts):
         in_map = (pts[:, 0] >= self.map_origin[0]) & (pts[:, 0] <= self.map_origin[0] + self.disc * self.occ_grid.shape[1]) \
