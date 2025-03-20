@@ -307,8 +307,8 @@ class LocalMapper:
         center_pos = pos[:2] - self.map_center
         if np.linalg.norm(center_pos) > self.recenter_thresh:
             self.map_origin += center_pos
-            cells_to_move = center_pos // self.disc
-            dx, dy = cells_to_move[0], cells_to_move[1]
+            # cells_to_move = center_pos // self.disc
+            dx, dy = cells_to_move[0] // self.disc, cells_to_move[1] // self.disc
             with self.occ_grid_lock:
                 if dx > 0:    # Move X up
                     self.occ_grid[:, dx:] = self.occ_grid[:, :-dx]
