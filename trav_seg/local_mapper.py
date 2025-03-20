@@ -168,16 +168,15 @@ class LocalMapper:
 
         # Ensure 'center' point is inside the polytope
         if np.all(A_poly @ b < b_poly):
-            np.save("A_poly.npy", A_poly)
-            np.save("b_poly.npy", b_poly)
             # Reduce the polygon to minimal representation
             mat = cdd.Matrix(np.hstack([b_poly[:, None], -A_poly]).tolist(), number_type='float')
             mat.rep_type = cdd.RepType.INEQUALITY
             mat.canonicalize()
             poly = cdd.Polyhedron(mat)
+
+            # Extract inequalities and extreme points
             ext_pts = np.array(poly.get_generators())[:, 1:]
             ineq = np.array(poly.get_inequalities())
-            np.save("ineq.npy", ineq)
             A_poly, b_poly = -ineq[:, 1:], ineq[:, 0]
             norm_A = np.linalg.norm(A_poly, axis=-1, keepdims=True)
             A_poly /= norm_A
@@ -185,18 +184,13 @@ class LocalMapper:
 
             # Reorder extreme points such that ith constraint connects i, i+1 ext pt
             n = ext_pts.shape[0]
-            inds = np.array([np.arange(n), (np.arange(n) - 1) % n])  # Handles wrap-around for last element
-
-            np.save("A.npy", A_poly)
-            np.save("b.npy", b_poly)
-            np.save("ext_pts.npy", ext_pts)
-            
-            # Shape: (2, num_constraints, num_points)
+            inds = np.array([np.arange(n), (np.arange(n) - 1) % n])        # Handles wrap-around for last element
             sat_mat = A_poly @ ext_pts.T - b_poly[:, None]
-            sat_mask = np.all(np.abs(sat_mat[inds, :]) < 1e-10, axis=0)
-
-            # Each column of `sat_mask` should have exactly one `True`, which selects the correct ext_pts row
+            sat_mask = np.all(np.abs(sat_mat[inds, :]) < 1e-10, axis=0)    # Identify which constraints each extreme point is on
             assert np.all(np.sum(sat_mask, axis=1) == 1), "Each row should have exactly one True value"
+            ext_pts = np.repeat(ext_pts[None, :, :], n, axis=0)[sat_mask]  # And index them in the proper order
+            
+            # Each column of `sat_mask` should have exactly one `True`, which selects the correct ext_pts row
             # if not np.all(np.sum(sat_mask, axis=1) == 1):
             #     import scipy.io
             #     print("Each row should have exaclty one true value")
@@ -208,9 +202,7 @@ class LocalMapper:
             #     print(b_poly)
             #     print(ext_pts)
             #     scipy.io.savemat('data.mat', {'star_pts' : star_pts, 'extreme_star_pts' : extreme_star_pts, 'A_poly' : A_poly, 'b_poly' : b_poly, 'ext_pts' : ext_pts })
-
-            # Use boolean indexing to retrieve the valid ext_pts
-            ext_pts = np.repeat(ext_pts[None, :, :], n, axis=0)[sat_mask]
+            
             self.polytopes.append({'vertices': ext_pts, 'A': A_poly, 'b': b_poly})  # A <= b
 
     @staticmethod
