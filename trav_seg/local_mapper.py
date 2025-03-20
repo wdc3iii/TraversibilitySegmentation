@@ -271,7 +271,6 @@ class LocalMapper:
         # If hopper has moved too far from the center of the occ grid, re-center it
         center_pos = pos[:2] - self.map_center
         if np.linalg.norm(center_pos) > self.recenter_thresh:
-            self.get_logger().info("Recentering Local Map")
             self.map_origin += center_pos
             cells_to_move = center_pos // self.disc
             dx, dy = cells_to_move[0], cells_to_move[1]
@@ -280,6 +279,7 @@ class LocalMapper:
                     self.occ_grid[:, dx:] = self.occ_grid[:, :-dx]
                     self.occ_grid[:, :dx] = self.UNKNOWN
                 else:
+                    dx = abs(dx)
                     self.occ_grid[:, :-dx] = self.occ_grid[:, dx:]
                     self.occ_grid[:, -dx:] = self.UNKNOWN
 
@@ -287,6 +287,7 @@ class LocalMapper:
                     self.occ_grid[dy:, :] = self.occ_grid[:-dy, :]
                     self.occ_grid[:dy, :] = self.UNKNOWN
                 else:
+                    dy = abs(dy)
                     self.occ_grid[:-dy, :] = self.occ_grid[dy:, :]
                     self.occ_grid[-dy:, :] = self.UNKNOWN
 
@@ -328,6 +329,63 @@ class LocalMapper:
         x_inds = np.clip(inds[:, 0], 0, self.occ_grid.shape[1] - 1)
         y_inds = np.clip(inds[:, 1], 0, self.occ_grid.shape[0] - 1)
         return y_inds, x_inds
+    
+    def get_xyz(self):
+        """Thread-safe get of the trav_seg pointcloud
+
+        Returns:
+            np.ndarray: trav_seg point cloud
+        """
+        with self.trav_seg_lock:
+            return self.trav_seg.xyz.copy()
+        
+    def get_seg_frame(self):
+        """Thread-safe get of the trav_seg segment frame
+
+        Returns:
+            np.ndarray: trav_seg segment frame
+        """
+        with self.trav_seg_lock:
+            return self.trav_seg.seg_frame.copy()
+        
+    def get_local_prompt(self):
+        """Thread-safe get of the trav_seg local_prompt
+
+        Returns:
+            bool: trav_seg local_prompt
+        """
+        with self.trav_seg_lock:
+            return self.trav_seg.local_prompt
+        
+    def get_prompt_completed(self):
+        """Thread-safe get of the trav_seg prompt_completed
+
+        Returns:
+            bool: trav_seg prompt_completed
+        """
+        with self.trav_seg_lock:
+            return self.trav_seg.prompt_completed
+
+    def get_all_mask(self):
+        """Thread-safe get of the trav_seg all_mask
+
+        Returns:
+            np.ndarray: trav_seg all_mask
+        """
+        with self.trav_seg_lock:
+            return self.trav_seg.all_mask.copy()
+        
+    def add_prompt(self, group:int, label:int, x:int, y:int):
+        """Thread-safe call of the trav_seg add_prompt
+
+        Args:
+            group (int): object group
+            label (int): object label
+            x (int): x point position
+            y (int): y point position
+        """
+        with self.trav_seg_lock:
+            self.trav_seg.add_prompt(group, label, x, y)
 
     def shutdown(self):
         self.trav_seg.shutdown()
