@@ -4,6 +4,7 @@ import numpy as np
 from sklearn.cluster import KMeans
 from trav_seg.trav_segmenter import TravSegmenter
 from scipy.spatial import ConvexHull, HalfspaceIntersection
+import cdd
 
 
 class LocalMapper:
@@ -143,32 +144,41 @@ class LocalMapper:
             b (np.ndarray): b vector describing the center of the ellipse
         """
         # Select points to transform
-        trans_points = (np.linalg.inv(A) @ ((self.locs + self.map_origin).T - b[:, None])).T
-        norm_points = np.linalg.norm(trans_points, axis=-1, keepdims=True)
+        occ_points = (np.linalg.inv(A) @ ((self.locs + self.map_origin).T - b[:, None])).T
+        norm_points = np.linalg.norm(occ_points, axis=-1, keepdims=True)
         keep_pts = (np.squeeze(norm_points) <= self.buffer_mult) & np.logical_not(self.free_mask)
         if np.sum(keep_pts) < self.min_keep_pts:
             print("Not enough points to transform.")
             return
-        trans_points = trans_points[keep_pts, :]
+        occ_points = occ_points[keep_pts, :]
         norm_points = norm_points[keep_pts] + 1e-6
 
         # Transform the points
-        trans_points *= (2 * self.buffer_mult - norm_points) / norm_points
+        trans_points = occ_points * (2 * self.buffer_mult - norm_points) / norm_points
         # Compute the convex hull and obtain star points
         conv_hull = ConvexHull(trans_points)
-        star_pts = trans_points[conv_hull.vertices]
-        star_pts_norm = np.linalg.norm(star_pts, axis=-1, keepdims=True)
-        star_pts *= (2 * self.buffer_mult - star_pts_norm) / star_pts_norm
+        star_pts = (self.locs + self.map_origin)[keep_pts][conv_hull.vertices]
+        # star_pts_norm = np.linalg.norm(star_pts, axis=-1, keepdims=True)
+        # star_pts *= (2 * self.buffer_mult - star_pts_norm) / star_pts_norm
 
-        star_pts = (A @ star_pts.T + b[:, None]).T
+        # star_pts = (A @ star_pts.T + b[:, None]).T
 
         # Convexify the star-convex set
         A_poly, b_poly = self.compute_polytope_from_points(star_pts)
 
         # Ensure 'center' point is inside the polytope
         if np.all(A_poly @ b < b_poly):
-            halfspaces = HalfspaceIntersection(np.hstack((A_poly, -b_poly[:, None])), b)
-            ext_pts = halfspaces.intersections
+            # Reduce the polygon to minimal representation
+            mat = cdd.Matrix(np.hstack([b[:, None], -A]).tolist(), number_type='float')
+            mat.rep_type = cdd.RepType.INEQUALITY
+            mat.canonicalize()
+            poly = cdd.Polyhedron(mat)
+            ext_pts = np.array(poly.get_generators())
+            ineq = np.array(poly.get_inequalities())[:, 1:]
+            A_poly, b_poly = -ineq[:, 1:], ineq[:, 0]
+            norm_A = np.linalg.norm(A_poly, axis=-1, keepdims=True)
+            A_poly /= norm_A
+            b_poly /= norm_A.squeeze()
 
             # Reorder extreme points such that ith constraint connects i, i+1 ext pt
             n = ext_pts.shape[0]
@@ -176,10 +186,21 @@ class LocalMapper:
 
             # Shape: (2, num_constraints, num_points)
             sat_mat = A_poly @ ext_pts.T - b_poly[:, None]
-            sat_mask = np.all(sat_mat[inds, :] == 0, axis=0)  
+            sat_mask = np.all(sat_mat[inds, :] == 0, axis=0)
 
             # Each column of `sat_mask` should have exactly one `True`, which selects the correct ext_pts row
-            assert np.all(np.sum(sat_mask, axis=1) == 1), "Each row should have exactly one True value"
+            # assert np.all(np.sum(sat_mask, axis=1) == 1), "Each row should have exactly one True value"
+            if not np.all(np.sum(sat_mask, axis=1) == 1):
+                import scipy.io
+                print("Each row should have exaclty one true value")
+                print(star_pts)
+                conv_hull = ConvexHull(star_pts)
+                extreme_star_pts = star_pts[conv_hull.vertices]
+                print(extreme_star_pts)
+                print(A_poly)
+                print(b_poly)
+                print(ext_pts)
+                scipy.io.savemat('data.mat', {'star_pts' : star_pts, 'extreme_star_pts' : extreme_star_pts, 'A_poly' : A_poly, 'b_poly' : b_poly, 'ext_pts' : ext_pts })
 
             # Use boolean indexing to retrieve the valid ext_pts
             ext_pts = np.repeat(ext_pts[None, :, :], n, axis=0)[sat_mask]
