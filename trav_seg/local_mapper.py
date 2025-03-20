@@ -168,7 +168,8 @@ class LocalMapper:
         # Ensure 'center' point is inside the polytope
         if np.all(A_poly @ b < b_poly):
             halfspaces = HalfspaceIntersection(np.hstack((A_poly, -b_poly[:, None])), b)
-            self.polytopes.append({'vertices': halfspaces.intersections, 'A': A_poly, 'b': b_poly})  # A <= b
+            ext_pts = halfspaces.intersections
+            self.polytopes.append({'vertices': ext_pts, 'A': A_poly, 'b': b_poly})  # A <= b
 
     @staticmethod
     def compute_polytope_from_points(star_pts):
@@ -408,3 +409,35 @@ if __name__ == '__main__':
     A, b = LocalMapper.compute_polytope_from_points(star_pts)
     halfspaces = HalfspaceIntersection(np.hstack((A, -b[:, None])), np.zeros((2,)))
     ext_pts = halfspaces.intersections
+
+    print(A.shape, b.shape, ext_pts.shape)
+    print(A); print(b); print(ext_pts)
+    print(A @ ext_pts.T - b[:, None])
+
+    sat_mat = A @ ext_pts.T - b[:, None]
+    ext_pts2 = np.zeros_like(ext_pts)
+    for i in range(ext_pts.shape[0]):
+        # ext_pts[i] statifies constraints i, i + 1
+        inds = [i, i - 1] if i - 1 >= 0 else [i, ext_pts.shape[0] - 1]
+        mask = np.all(sat_mat[inds, :] == 0, axis=0)
+        assert np.sum(mask) == 1
+        ext_pts2[i, :] = ext_pts[mask, :]
+
+    print(ext_pts2)
+
+    n = ext_pts.shape[0]
+    inds = np.array([np.arange(n), (np.arange(n) + 1) % n])  # Handles wrap-around for last element
+    print("inds", inds)
+
+    # Shape: (2, num_constraints, num_points)
+    sat_mask = np.all(sat_mat[inds, :] == 0, axis=0)  
+    print('satmat', sat_mat)
+    print('sat_mask', sat_mask)
+
+    # Each column of `sat_mask` should have exactly one `True`, which selects the correct ext_pts row
+    assert np.all(np.sum(sat_mask, axis=1) == 1), "Each row should have exactly one True value"
+
+    # Use boolean indexing to retrieve the valid ext_pts
+    ext_pts2 = ext_pts[sat_mask.T]
+    print(ext_pts2)
+    print('here')
