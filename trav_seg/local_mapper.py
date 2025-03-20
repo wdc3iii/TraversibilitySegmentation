@@ -306,9 +306,11 @@ class LocalMapper:
         # If hopper has moved too far from the center of the occ grid, re-center it
         center_pos = pos[:2] - self.map_center
         if np.linalg.norm(center_pos) > self.recenter_thresh:
-            self.map_origin += center_pos
             # cells_to_move = center_pos // self.disc
-            dx, dy = cells_to_move[0] // self.disc, cells_to_move[1] // self.disc
+            dx, dy = -int(center_pos[0] // self.disc), -int(center_pos[1] // self.disc)
+            print(dx)
+            print(type(dx))
+            self.map_origin -= np.array([dx * self.disc, dy * self.disc])
             with self.occ_grid_lock:
                 if dx > 0:    # Move X up
                     self.occ_grid[:, dx:] = self.occ_grid[:, :-dx]
